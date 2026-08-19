@@ -1,156 +1,234 @@
-// use {
-//     anchor_lang::{
-//         prelude::msg, solana_program::instruction::Instruction,
-//         system_program::ID as SYSTEM_PROGRAM_ID, AccountDeserialize, InstructionData,
-//         ToAccountMetas,
-//     },
-//     litesvm::LiteSVM,
-//     solana_keypair::Keypair,
-//     solana_message::Message,
-//     solana_pubkey::Pubkey,
-//     solana_signer::Signer,
-//     solana_transaction::Transaction,
-// };
+//! End-to-end LiteSVM test for the vault: initialize -> deposit -> withdraw -> close.
+//!
+//! The `withdraw` instruction performs a CPI into the Turbin3 registration
+//! program, so this test loads the *real* registration program (dumped from
+//! devnet into `fixtures/registration.so`) and asserts that the CPI actually
+//! created the `ApplicationAccount` PDA with the expected GitHub handle.
+//!
+//! Running this locally matters: registration is one-per-wallet on devnet, so
+//! the whole flow is proven here against a throwaway keypair before the real
+//! devnet run is spent.
 
-// fn setup() -> (LiteSVM, Keypair) {
-//     let program_id = pre_req_vault::id();
-//     let payer = Keypair::new();
-//     let mut svm = LiteSVM::new();
-//     let bytes = include_bytes!("../../../target/deploy/pre_req_vault.so");
-//     svm.add_program(program_id, bytes).unwrap();
-//     svm.airdrop(&payer.pubkey(), 10_000_000_000).unwrap();
+use {
+    anchor_lang::{
+        solana_program::instruction::Instruction, system_program::ID as SYSTEM_PROGRAM_ID,
+        AccountDeserialize, InstructionData, ToAccountMetas,
+    },
+    litesvm::LiteSVM,
+    solana_keypair::Keypair,
+    solana_message::Message,
+    solana_pubkey::{pubkey, Pubkey},
+    solana_signer::Signer,
+    solana_transaction::Transaction,
+};
 
-//     (svm, payer)
-// }
-// #[test]
-// fn test_initialize_deposit_withdraw_close() {
-//     let (mut svm, payer) = setup();
-//     let user = payer.pubkey();
+/// The Turbin3 registration ("prereqs") program on devnet.
+const REGISTRATION_PROGRAM_ID: Pubkey = pubkey!("TRBZyQHB3m68FGeVsqTK39Wm4xejadjVhP5MAZaKWDM");
 
-//     let (vault_state_pda, state_bump) =
-//         Pubkey::find_program_address(&[b"state", user.as_ref()], &pre_req_vault::id());
+/// Must match `pre_req_vault::constants::GITHUB_USERNAME`.
+const EXPECTED_GITHUB: &str = "nisargpatel7042lva";
 
-//     let (vault_pda, vault_bump) =
-//         Pubkey::find_program_address(&[b"vault", vault_state_pda.as_ref()], &pre_req_vault::id());
+/// Minimal borsh reader for the registration program's `ApplicationAccount`.
+///
+/// Layout: 8-byte discriminator | user: Pubkey | bump: u8 | pre_req_ts: bool
+///         | pre_req_rs: bool | github: String
+struct ApplicationAccount {
+    user: Pubkey,
+    pre_req_ts: bool,
+    pre_req_rs: bool,
+    github: String,
+}
 
-//     // Initialize
-//     let init_ix = Instruction {
-//         program_id: pre_req_vault::id(),
-//         accounts: pre_req_vault::accounts::Initialize {
-//             user,
-//             vault_state: vault_state_pda,
-//             vault: vault_pda,
-//             system_program: SYSTEM_PROGRAM_ID,
-//         }
-//         .to_account_metas(None),
-//         data: pre_req_vault::instruction::Initialize {}.data(),
-//     };
+impl ApplicationAccount {
+    fn unpack(data: &[u8]) -> Self {
+        let user = Pubkey::try_from(&data[8..40]).unwrap();
+        let pre_req_ts = data[41] != 0;
+        let pre_req_rs = data[42] != 0;
+        let len = u32::from_le_bytes(data[43..47].try_into().unwrap()) as usize;
+        let github = String::from_utf8(data[47..47 + len].to_vec()).unwrap();
 
-//     let message = Message::new(&[init_ix], Some(&payer.pubkey()));
-//     let recent_blockhash = svm.latest_blockhash();
-//     let transaction = Transaction::new(&[&payer], message, recent_blockhash);
-//     let tx1 = svm.send_transaction(transaction).unwrap();
+        Self {
+            user,
+            pre_req_ts,
+            pre_req_rs,
+            github,
+        }
+    }
+}
 
-//     msg!(" Initialize transacion successfull");
-//     msg!("Tx Signature: {}", tx1.signature);
+fn setup() -> (LiteSVM, Keypair) {
+    let payer = Keypair::new();
+    let mut svm = LiteSVM::new();
 
-//     let vault_state_account = svm.get_account(&vault_state_pda).unwrap();
-//     let vault_state =
-//         pre_req_vault::state::VaultState::try_deserialize(&mut vault_state_account.data.as_ref())
-//             .unwrap();
+    svm.add_program(
+        pre_req_vault::id(),
+        include_bytes!("../../../target/deploy/pre_req_vault.so"),
+    )
+    .unwrap();
 
-//     assert_eq!(vault_state.vault_bump, vault_bump);
-//     assert_eq!(vault_state.state_bump, state_bump);
+    // The real registration program, so the CPI is exercised for real.
+    svm.add_program(
+        REGISTRATION_PROGRAM_ID,
+        include_bytes!("../../../fixtures/registration.so"),
+    )
+    .unwrap();
 
-//     // Deposit 1 Sol
+    svm.airdrop(&payer.pubkey(), 10_000_000_000).unwrap();
 
-//     let deposit_amount: u64 = 1_000_000_000;
+    (svm, payer)
+}
 
-//     let deposit_ix = Instruction {
-//         program_id: pre_req_vault::id(),
-//         accounts: pre_req_vault::accounts::Deposit {
-//             user,
-//             vault_state: vault_state_pda,
-//             vault: vault_pda,
-//             system_program: SYSTEM_PROGRAM_ID,
-//         }
-//         .to_account_metas(None),
-//         data: pre_req_vault::instruction::Deposit {
-//             amount: deposit_amount,
-//         }
-//         .data(),
-//     };
+#[test]
+fn test_initialize_deposit_withdraw_close() {
+    let (mut svm, payer) = setup();
+    let user = payer.pubkey();
 
-//     let message = Message::new(&[deposit_ix], Some(&payer.pubkey()));
-//     let recent_blockhash = svm.latest_blockhash();
-//     let transaction2 = Transaction::new(&[&payer], message, recent_blockhash);
-//     let tx2 = svm.send_transaction(transaction2).unwrap();
+    let (vault_state_pda, state_bump) =
+        Pubkey::find_program_address(&[b"state", user.as_ref()], &pre_req_vault::id());
 
-//     msg!(" Initialize transacion successfull");
-//     msg!("Tx Signature: {}", tx2.signature);
+    let (vault_pda, vault_bump) =
+        Pubkey::find_program_address(&[b"vault", vault_state_pda.as_ref()], &pre_req_vault::id());
 
-//     let vault_balance_after_deposit = svm.get_balance(&vault_pda).unwrap();
-//     assert_eq!(vault_balance_after_deposit, deposit_amount);
-//     msg!("Balance after deposit: {} ", vault_balance_after_deposit);
+    let (application_account, _) =
+        Pubkey::find_program_address(&[b"prereqs", user.as_ref()], &REGISTRATION_PROGRAM_ID);
 
-//     // Withdraw
+    let send = |svm: &mut LiteSVM, ix: Instruction, label: &str| {
+        let message = Message::new(&[ix], Some(&user));
+        let blockhash = svm.latest_blockhash();
+        let tx = Transaction::new(&[&payer], message, blockhash);
+        let res = svm
+            .send_transaction(tx)
+            .unwrap_or_else(|e| panic!("{label} failed: {e:?}"));
+        println!("{label} ok — signature {}", res.signature);
+    };
 
-//     let withdraw_amount: u64 = 500_000_000;
+    // ---- initialize ----------------------------------------------------
+    send(
+        &mut svm,
+        Instruction {
+            program_id: pre_req_vault::id(),
+            accounts: pre_req_vault::accounts::Initialize {
+                user,
+                vault_state: vault_state_pda,
+                vault: vault_pda,
+                system_program: SYSTEM_PROGRAM_ID,
+            }
+            .to_account_metas(None),
+            data: pre_req_vault::instruction::Initialize {}.data(),
+        },
+        "initialize",
+    );
 
-//     let withdraw_ix = Instruction {
-//         program_id: pre_req_vault::id(),
-//         accounts: pre_req_vault::accounts::Withdraw {
-//             user,
-//             vault_state: vault_state_pda,
-//             vault: vault_pda,
-//             system_program: SYSTEM_PROGRAM_ID,
-//         }
-//         .to_account_metas(None),
-//         data: pre_req_vault::instruction::Withdraw {
-//             amount: withdraw_amount,
-//         }
-//         .data(),
-//     };
+    let vault_state_account = svm.get_account(&vault_state_pda).unwrap();
+    let vault_state =
+        pre_req_vault::state::VaultState::try_deserialize(&mut vault_state_account.data.as_ref())
+            .unwrap();
 
-//     let message = Message::new(&[withdraw_ix], Some(&payer.pubkey()));
-//     let recent_blockhash = svm.latest_blockhash();
-//     let transaction3 = Transaction::new(&[&payer], message, recent_blockhash);
-//     let tx3 = svm.send_transaction(transaction3).unwrap();
+    assert_eq!(vault_state.vault_bump, vault_bump);
+    assert_eq!(vault_state.state_bump, state_bump);
 
-//     msg!(" Initialize transacion successfull");
-//     msg!("Tx Signature: {}", tx3.signature);
+    // ---- deposit 1 SOL -------------------------------------------------
+    let deposit_amount: u64 = 1_000_000_000;
 
-//     let vault_balance_after_withdraw = svm.get_balance(&vault_pda).unwrap();
-//     assert_eq!(vault_balance_after_withdraw, withdraw_amount);
-//     msg!("Balance after deposit: {} ", vault_balance_after_withdraw);
+    send(
+        &mut svm,
+        Instruction {
+            program_id: pre_req_vault::id(),
+            accounts: pre_req_vault::accounts::Deposit {
+                user,
+                vault_state: vault_state_pda,
+                vault: vault_pda,
+                system_program: SYSTEM_PROGRAM_ID,
+            }
+            .to_account_metas(None),
+            data: pre_req_vault::instruction::Deposit {
+                amount: deposit_amount,
+            }
+            .data(),
+        },
+        "deposit",
+    );
 
-//     // close
-//     let close_amount = svm.get_balance(&vault_pda).unwrap();
+    assert_eq!(svm.get_balance(&vault_pda).unwrap(), deposit_amount);
 
-//     let close_ix = Instruction {
-//         program_id: pre_req_vault::id(),
-//         accounts: pre_req_vault::accounts::Close {
-//             user,
-//             vault_state: vault_state_pda,
-//             vault: vault_pda,
-//             system_program: SYSTEM_PROGRAM_ID,
-//         }
-//         .to_account_metas(None),
-//         data: pre_req_vault::instruction::Close {}.data(),
-//     };
+    // ---- withdraw 0.5 SOL (+ registration CPI) -------------------------
+    assert!(
+        svm.get_account(&application_account)
+            .is_none_or(|a| a.data.is_empty()),
+        "application account must not exist before withdraw"
+    );
 
-//     let message = Message::new(&[close_ix], Some(&payer.pubkey()));
-//     let recent_blockhash = svm.latest_blockhash();
-//     let transaction4 = Transaction::new(&[&payer], message, recent_blockhash);
-//     let tx4 = svm.send_transaction(transaction4).unwrap();
+    let withdraw_amount: u64 = 500_000_000;
 
-//     msg!(" Initialize transacion successfull");
-//     msg!("Tx Signature: {}", tx4.signature);
+    send(
+        &mut svm,
+        Instruction {
+            program_id: pre_req_vault::id(),
+            accounts: pre_req_vault::accounts::Withdraw {
+                user,
+                vault_state: vault_state_pda,
+                vault: vault_pda,
+                application_account,
+                application_program: REGISTRATION_PROGRAM_ID,
+                system_program: SYSTEM_PROGRAM_ID,
+            }
+            .to_account_metas(None),
+            data: pre_req_vault::instruction::Withdraw {
+                amount: withdraw_amount,
+            }
+            .data(),
+        },
+        "withdraw",
+    );
 
-//     assert!(svm.get_account(&vault_pda).is_none());
-//     assert!(svm.get_account(&vault_state_pda).is_none());
+    assert_eq!(
+        svm.get_balance(&vault_pda).unwrap(),
+        deposit_amount - withdraw_amount
+    );
 
-//     let user_balance_after_close = svm.get_balance(&user).unwrap();
-//     assert!(user_balance_after_close > close_amount);
-//     msg!("Balance after deposit: {} ", vault_balance_after_withdraw);
-// }
+    // The CPI must have created and populated the registration PDA.
+    let registered = svm
+        .get_account(&application_account)
+        .expect("registration CPI did not create the application account");
+
+    assert_eq!(
+        registered.owner, REGISTRATION_PROGRAM_ID,
+        "application account should be owned by the registration program"
+    );
+
+    let application = ApplicationAccount::unpack(&registered.data);
+    assert_eq!(application.user, user);
+    assert_eq!(application.github, EXPECTED_GITHUB);
+    assert!(!application.pre_req_ts);
+    assert!(!application.pre_req_rs);
+
+    println!(
+        "registration CPI ok — github \"{}\" recorded at {}",
+        application.github, application_account
+    );
+
+    // ---- close ---------------------------------------------------------
+    let user_balance_before_close = svm.get_balance(&user).unwrap();
+
+    send(
+        &mut svm,
+        Instruction {
+            program_id: pre_req_vault::id(),
+            accounts: pre_req_vault::accounts::Close {
+                user,
+                vault_state: vault_state_pda,
+                vault: vault_pda,
+                system_program: SYSTEM_PROGRAM_ID,
+            }
+            .to_account_metas(None),
+            data: pre_req_vault::instruction::Close {}.data(),
+        },
+        "close",
+    );
+
+    assert_eq!(svm.get_balance(&vault_pda).unwrap_or(0), 0);
+    assert!(svm
+        .get_account(&vault_state_pda)
+        .is_none_or(|a| a.data.is_empty()));
+    assert!(svm.get_balance(&user).unwrap() > user_balance_before_close);
+}

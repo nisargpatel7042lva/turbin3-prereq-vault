@@ -1,0 +1,20 @@
+import { Connection, PublicKey } from "@solana/web3.js";
+const conn = new Connection("https://api.devnet.solana.com", "confirmed");
+const REG = new PublicKey("TRBZyQHB3m68FGeVsqTK39Wm4xejadjVhP5MAZaKWDM");
+const user = new PublicKey("3fTVWVBgm8yYh8XXd7qTBCBuLNP4nMKsCAgesHHCBnA5");
+const [pda, bump] = PublicKey.findProgramAddressSync([Buffer.from("prereqs"), user.toBuffer()], REG);
+const info = await conn.getAccountInfo(pda);
+if (!info) { console.log("NOT FOUND:", pda.toBase58()); process.exit(1); }
+const d = info.data;
+const owner  = info.owner.toBase58();
+const acctUser = new PublicKey(d.subarray(8, 40)).toBase58();
+const storedBump = d[40], ts = d[41], rs = d[42];
+const len = d.readUInt32LE(43);
+const github = d.subarray(47, 47 + len).toString("utf8");
+console.log("ApplicationAccount PDA :", pda.toBase58(), "(bump", bump + ")");
+console.log("owner program          :", owner);
+console.log("  user                 :", acctUser);
+console.log("  bump                 :", storedBump);
+console.log("  pre_req_ts           :", !!ts);
+console.log("  pre_req_rs           :", !!rs);
+console.log("  github               :", JSON.stringify(github));
