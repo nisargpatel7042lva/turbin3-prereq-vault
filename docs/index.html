@@ -1,0 +1,109 @@
+<title>pre-req-vault Architecture</title>
+
+<style>
+  :root {
+    --paper:#EDF2F2; --surface:#FFFFFF; --ink:#131A1B; --muted:#55666A;
+    --rule:#C6D4D4; --vault:#0F6B68;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", "Cascadia Mono", "Roboto Mono", Menlo, Consolas, monospace;
+    --serif: "Iowan Old Style", Charter, "Bitstream Charter", "Sitka Text", Cambria, Georgia, serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:#0E1415; --surface:#161F20; --ink:#E4ECEB; --muted:#93A5A8;
+      --rule:#2B393B; --vault:#56D3CD;
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper:#0E1415; --surface:#161F20; --ink:#E4ECEB; --muted:#93A5A8;
+    --rule:#2B393B; --vault:#56D3CD;
+  }
+  * { box-sizing:border-box; }
+  body {
+    background:var(--paper); color:var(--ink); font-family:var(--serif);
+    font-size:17px; line-height:1.62; margin:0; padding:0 20px 88px;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap { max-width:1100px; margin:0 auto; }
+  header { padding:64px 0 32px; border-bottom:1px solid var(--rule); margin-bottom:40px; }
+  .eyebrow { font-family:var(--mono); font-size:11.5px; letter-spacing:.14em;
+             text-transform:uppercase; color:var(--muted); margin:0 0 16px; }
+  h1 { font-family:var(--mono); font-weight:600; letter-spacing:-.025em;
+       font-size:clamp(28px,5vw,42px); line-height:1.08; margin:0 0 16px; }
+  .lede { font-size:19px; color:var(--muted); margin:0; max-width:60ch; }
+  h2 { font-family:var(--mono); font-weight:600; font-size:17px; margin:0 0 20px;
+       padding-top:14px; border-top:1px solid var(--rule); }
+  section { margin:0 0 56px; }
+
+  figure { margin:0; }
+  .shot { background:#FFFFFF; border:1px solid var(--rule); border-radius:4px;
+          padding:20px; overflow-x:auto; }
+  .shot img { display:block; width:100%; min-width:820px; height:auto; }
+  figcaption { font-size:14.5px; color:var(--muted); margin-top:12px; max-width:66ch; }
+
+  table { border-collapse:collapse; width:100%; font-size:14.5px; }
+  td { padding:9px 14px 9px 0; border-bottom:1px solid var(--rule); vertical-align:top; }
+  td:first-child { font-family:var(--mono); font-size:12px; color:var(--muted);
+                   white-space:nowrap; letter-spacing:.04em; width:200px; }
+  .m { font-family:var(--mono); font-size:13px; word-break:break-all; }
+  pre { font-family:var(--mono); font-size:12.5px; line-height:1.7; background:var(--surface);
+        border:1px solid var(--rule); border-left:3px solid var(--vault);
+        padding:16px 18px; overflow-x:auto; margin:0; }
+  pre b { color:#8A5A00; font-weight:600; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) pre b { color:#E3AC4E; } }
+  :root[data-theme="dark"] pre b { color:#E3AC4E; }
+  a { color:var(--vault); text-underline-offset:2px; }
+  :focus-visible { outline:2px solid var(--vault); outline-offset:2px; }
+</style>
+
+<div class="wrap">
+
+<header>
+  <p class="eyebrow">Turbin3 prerequisite &middot; Solana devnet</p>
+  <h1>pre-req-vault</h1>
+  <p class="lede">A SOL vault in four instructions, and the cross-program invocation
+  hidden inside the third one.</p>
+</header>
+
+<section>
+  <figure>
+    <div class="shot">
+      <img src="excalidraw/architecture.png"
+           alt="Architecture diagram. A wallet signs a transaction and asks the vault program for one of four instructions: initialize, deposit, withdraw or close. The program writes to two PDAs, vault_state which holds two bumps and vault which holds the SOL balance. A dashed arrow from withdraw shows a cross-program invocation into Turbin3's registration program, which writes the GitHub handle into an ApplicationAccount PDA it owns.">
+    </div>
+    <figcaption>Editable source:
+      <a href="excalidraw/architecture.excalidraw">architecture.excalidraw</a>
+      (open it with Menu &rarr; Open at excalidraw.com).</figcaption>
+  </figure>
+</section>
+
+<section>
+  <h2>Proof of the CPI</h2>
+  <p style="max-width:66ch">Invocation depth is what separates a real cross-program call
+  from two instructions sitting side by side in one transaction. From the devnet logs:</p>
+  <pre>Program 9PrupsAJcRLDZAS5wCKpJttKBREHFLkCBgauqMjWL4rv <b>invoke [1]</b>
+  Program log: Instruction: Withdraw
+  Program 11111111111111111111111111111111 <b>invoke [2]</b>
+  Program 11111111111111111111111111111111 success
+  Program TRBZyQHB3m68FGeVsqTK39Wm4xejadjVhP5MAZaKWDM <b>invoke [2]</b>
+    Program log: Instruction: Initialize
+    Program 11111111111111111111111111111111 <b>invoke [3]</b>
+    Program 11111111111111111111111111111111 success
+  Program TRBZyQHB3m68FGeVsqTK39Wm4xejadjVhP5MAZaKWDM success
+Program 9PrupsAJcRLDZAS5wCKpJttKBREHFLkCBgauqMjWL4rv success</pre>
+</section>
+
+<section>
+  <h2>On devnet</h2>
+  <table>
+    <tbody>
+      <tr><td>vault program</td><td class="m"><a href="https://explorer.solana.com/address/9PrupsAJcRLDZAS5wCKpJttKBREHFLkCBgauqMjWL4rv?cluster=devnet">9PrupsAJcRLDZAS5wCKpJttKBREHFLkCBgauqMjWL4rv</a></td></tr>
+      <tr><td>registration program</td><td class="m">TRBZyQHB3m68FGeVsqTK39Wm4xejadjVhP5MAZaKWDM</td></tr>
+      <tr><td>ApplicationAccount</td><td class="m"><a href="https://explorer.solana.com/address/3HzjHaxztQ2qPztzBJXrHhdKB25usg13qZFnRk5yRm4T?cluster=devnet">3HzjHaxztQ2qPztzBJXrHhdKB25usg13qZFnRk5yRm4T</a></td></tr>
+      <tr><td>github recorded</td><td class="m">nisargpatel7042lva</td></tr>
+      <tr><td>withdraw tx</td><td class="m"><a href="https://explorer.solana.com/tx/39y4FNeuKaMXouLeEtcqEGVvJBfRJ6My6LasDrT8dwqSMZ9w7DmEwxKr51cxG33htUpshuRFxrZF1kra8FoCJ85B?cluster=devnet">39y4FNeu&hellip;FoCJ85B</a></td></tr>
+      <tr><td>source</td><td class="m"><a href="https://github.com/nisargpatel7042lva/turbin3-prereq-vault">github.com/nisargpatel7042lva/turbin3-prereq-vault</a></td></tr>
+    </tbody>
+  </table>
+</section>
+
+</div>
